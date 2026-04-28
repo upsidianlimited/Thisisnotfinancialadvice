@@ -53,12 +53,9 @@ async function dbIsEmailAllowed(email) {
   return !error && data && data.length > 0;
 }
 
-// ─── Onboarding: track per-user in localStorage ───────────────────────────────
-function hasSeenOnboarding(email) {
-  return localStorage.getItem(`tinfa_onboarded_${email}`) === "true";
-}
-function markOnboardingDone(email) {
-  localStorage.setItem(`tinfa_onboarded_${email}`, "true");
+// ─── DB: mark onboarding done (stored in Supabase, works across all devices) ──
+async function dbMarkOnboarded(email) {
+  await supabase.from("tinfa_users").update({ onboarded: true }).eq("email", email);
 }
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
@@ -89,13 +86,13 @@ const globalCSS = `
   ::-webkit-scrollbar-thumb { background: #252D3F; border-radius: 2px; }
   input::placeholder, textarea::placeholder { color: ${T.textMute}; }
   select option { background: ${T.surface}; color: ${T.text}; }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(16px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
   @keyframes slideIn {
-    from { opacity: 0; transform: translateX(32px); }
+    from { opacity: 0; transform: translateX(28px); }
     to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
   }
 `;
 
@@ -151,38 +148,40 @@ function Flash({ text, type }) {
 const ONBOARDING_PAGES = [
   {
     icon: "◈",
-    title: "Welcome to TINFA",
-    subtitle: "This Is Not Financial Advice",
+    eyebrow: "Welcome",
+    title: "This Is Not\nFinancial Advice",
     body: "A private space for independent financial research, sharp analysis, and honest market thinking. No noise. No ads. No nonsense.",
   },
   {
     icon: "✦",
-    title: "What You'll Find Here",
-    subtitle: "Research. Opinions. Markets.",
-    body: "Dispatches on macro trends, stocks, crypto, commodities, and opinion. Vote on what resonates. Read what matters. Think for yourself.",
-    features: ["Curated market dispatches", "Community voting", "Categories: Macro, Stocks, Crypto & more", "Private, invite-only access"],
+    eyebrow: "What You'll Find Here",
+    title: "Research.\nOpinions.\nMarkets.",
+    body: "Dispatches across macro, stocks, crypto, commodities, and opinion. Vote on what resonates. Think for yourself.",
+    features: [
+      "Curated market dispatches",
+      "Community up/down voting",
+      "Macro · Stocks · Crypto · Commodities · Opinion",
+      "Private, invite-only access",
+    ],
   },
   {
     icon: "⊗",
-    title: "One Rule",
-    subtitle: "The first rule of TINFA",
-    body: "What happens on TINFA, stays on TINFA.",
-    note: "This is a private community. Keep it that way.",
+    eyebrow: "The First Rule of TINFA",
+    title: "What happens\non TINFA,\nstays on TINFA.",
+    body: "This is a private community. Keep it that way.",
     isLast: true,
   },
 ];
 
 function OnboardingSlider({ onDone }) {
-  const [page, setPage]         = useState(0);
-  const [animKey, setAnimKey]   = useState(0);
-  const touchStartX             = useRef(null);
+  const [page, setPage]       = useState(0);
+  const [animKey, setAnimKey] = useState(0);
+  const touchStartX           = useRef(null);
+  const total                 = ONBOARDING_PAGES.length;
 
-  const goTo = (n) => {
-    setPage(n);
-    setAnimKey(k => k + 1);
-  };
-  const next = () => page < ONBOARDING_PAGES.length - 1 ? goTo(page + 1) : onDone();
-  const prev = () => page > 0 && goTo(page - 1);
+  const goTo = (n) => { setPage(n); setAnimKey(k => k + 1); };
+  const next  = () => page < total - 1 ? goTo(page + 1) : onDone();
+  const prev  = () => page > 0 && goTo(page - 1);
 
   const onTouchStart = e => { touchStartX.current = e.touches[0].clientX; };
   const onTouchEnd   = e => {
@@ -193,81 +192,109 @@ function OnboardingSlider({ onDone }) {
     touchStartX.current = null;
   };
 
+  // Also support mouse drag on desktop
+  const mouseStartX = useRef(null);
+  const onMouseDown = e => { mouseStartX.current = e.clientX; };
+  const onMouseUp   = e => {
+    if (mouseStartX.current === null) return;
+    const dx = e.clientX - mouseStartX.current;
+    if (Math.abs(dx) > 40) { dx < 0 ? next() : prev(); }
+    mouseStartX.current = null;
+  };
+
   const p = ONBOARDING_PAGES[page];
 
   return (
-    <div style={{ ...shell, justifyContent: "space-between", maxWidth: "none", paddingTop: 0, background: T.bg }}
-      onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-
-      {/* Skip button */}
-      <div style={{ display: "flex", justifyContent: "flex-end", padding: "20px 24px 0" }}>
-        <button onClick={onDone} style={{ background: "none", border: "none", color: T.textMute, fontSize: 13, cursor: "pointer", letterSpacing: "0.05em" }}>
+    <div
+      style={{ ...shell, maxWidth: "none", paddingTop: 0, justifyContent: "space-between", userSelect: "none" }}
+      onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}
+      onMouseDown={onMouseDown} onMouseUp={onMouseUp}
+    >
+      {/* Top row */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 24px 0" }}>
+        {/* Step counter */}
+        <div style={{ fontSize: 11, color: T.textMute, letterSpacing: "0.1em" }}>
+          {page + 1} / {total}
+        </div>
+        <button onClick={onDone} style={{ background: "none", border: "none", color: T.textMute, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>
           Skip
         </button>
       </div>
 
-      {/* Content */}
-      <div key={animKey} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", animation: "slideIn 0.35s ease forwards" }}>
-
-        {/* Icon */}
+      {/* Slide content */}
+      <div
+        key={animKey}
+        style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 32px 20px", animation: "slideIn 0.3s ease forwards" }}
+      >
+        {/* Icon circle */}
         <div style={{
-          width: 80, height: 80, borderRadius: "50%",
-          background: T.surface, border: `1px solid ${T.border}`,
+          width: 72, height: 72, borderRadius: "50%",
+          background: T.surface, border: `1px solid ${T.border2}`,
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 32, color: T.accent, marginBottom: 32,
+          fontSize: 28, color: T.accent, marginBottom: 28, flexShrink: 0,
         }}>
           {p.icon}
         </div>
 
-        {/* Text */}
-        <div style={{ fontSize: 10, letterSpacing: "0.3em", textTransform: "uppercase", color: T.accent, marginBottom: 10, textAlign: "center" }}>
-          {p.subtitle}
+        {/* Eyebrow */}
+        <div style={{ fontSize: 10, letterSpacing: "0.3em", textTransform: "uppercase", color: T.accent, marginBottom: 12 }}>
+          {p.eyebrow}
         </div>
-        <div style={{ fontSize: 26, fontWeight: 700, color: T.text, textAlign: "center", lineHeight: 1.2, marginBottom: 20, fontFamily: T.ff }}>
+
+        {/* Title — supports newlines */}
+        <div style={{ fontSize: 28, fontWeight: 700, color: T.text, lineHeight: 1.2, marginBottom: 20, whiteSpace: "pre-line" }}>
           {p.title}
         </div>
-        <div style={{ fontSize: 15, color: T.textSub, textAlign: "center", lineHeight: 1.75, maxWidth: 320 }}>
+
+        {/* Body */}
+        <div style={{ fontSize: 15, color: T.textSub, lineHeight: 1.75, marginBottom: p.features ? 24 : 0 }}>
           {p.body}
         </div>
 
-        {/* Features list (page 2) */}
+        {/* Feature bullets (page 2) */}
         {p.features && (
-          <div style={{ marginTop: 24, width: "100%", maxWidth: 300 }}>
+          <div>
             {p.features.map((f, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, flexShrink: 0 }} />
-                <div style={{ fontSize: 14, color: T.textSub }}>{f}</div>
+              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 10 }}>
+                <div style={{ width: 5, height: 5, borderRadius: "50%", background: T.accent, flexShrink: 0, marginTop: 7 }} />
+                <div style={{ fontSize: 14, color: T.textSub, lineHeight: 1.5 }}>{f}</div>
               </div>
             ))}
           </div>
         )}
-
-        {/* Rule note (page 3) */}
-        {p.note && (
-          <div style={{ marginTop: 20, fontSize: 12, color: T.textMute, textAlign: "center", fontStyle: "italic" }}>
-            {p.note}
-          </div>
-        )}
       </div>
 
-      {/* Bottom: dots + button */}
-      <div style={{ padding: "0 28px 40px", paddingBottom: "max(40px, env(safe-area-inset-bottom))" }}>
-        {/* Dots */}
-        <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 28 }}>
-          {ONBOARDING_PAGES.map((_, i) => (
-            <div key={i} onClick={() => goTo(i)} style={{
-              width: i === page ? 20 : 6, height: 6,
-              borderRadius: 3,
-              background: i === page ? T.accent : T.border2,
-              cursor: "pointer",
-              transition: "all 0.25s ease",
-            }} />
+      {/* Bottom: progress dots + CTA */}
+      <div style={{ padding: "0 28px", paddingBottom: "max(36px, env(safe-area-inset-bottom))", flexShrink: 0 }}>
+        {/* Progress dots */}
+        <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 24 }}>
+          {Array.from({ length: total }).map((_, i) => (
+            <div
+              key={i}
+              onClick={() => goTo(i)}
+              style={{
+                height: 6, borderRadius: 3, cursor: "pointer",
+                width: i === page ? 24 : 6,
+                background: i === page ? T.accent : T.border2,
+                transition: "all 0.25s ease",
+              }}
+            />
           ))}
         </div>
 
+        {/* CTA button */}
         <Btn onClick={next}>
-          {page < ONBOARDING_PAGES.length - 1 ? "Continue" : "Let's Go"}
+          {page < total - 1 ? "Continue →" : "I Understand — Let's Go"}
         </Btn>
+
+        {/* Back link */}
+        {page > 0 && (
+          <div style={{ textAlign: "center", marginTop: 14 }}>
+            <button onClick={prev} style={{ background: "none", border: "none", color: T.textMute, fontSize: 12, cursor: "pointer" }}>
+              ← Back
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -282,12 +309,22 @@ function AuthScreen({ onLogin }) {
     email: localStorage.getItem("tinfa_remember") === "true" ? (localStorage.getItem("tinfa_email") || "") : "",
     password: "",
   });
-  const [msg, setMsg]     = useState({ text: "", type: "" });
+  const [msg, setMsg]         = useState({ text: "", type: "" });
   const [loading, setLoading] = useState(false);
 
-  const set = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const set   = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
   const flash = (text, type = "err") => setMsg({ text, type });
   const clear = () => setMsg({ text: "", type: "" });
+
+  const resolveProfile = async (email) => {
+    let { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
+    if (!profile) {
+      await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0] });
+      const res = await supabase.from("tinfa_users").select("*").eq("email", email).single();
+      profile = res.data;
+    }
+    return profile;
+  };
 
   const handleLogin = async () => {
     clear(); setLoading(true);
@@ -301,12 +338,7 @@ function AuthScreen({ onLogin }) {
     }
     const { data, error } = await supabase.auth.signInWithPassword({ email, password: form.password });
     if (error || !data.user) { flash("Invalid email or password."); setLoading(false); return; }
-    let { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
-    if (!profile) {
-      await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0] });
-      const res = await supabase.from("tinfa_users").select("*").eq("email", email).single();
-      profile = res.data;
-    }
+    const profile = await resolveProfile(email);
     onLogin({ ...profile, authUser: data.user });
     setLoading(false);
   };
@@ -320,14 +352,17 @@ function AuthScreen({ onLogin }) {
     if (!allowed) { flash("Access denied… but we respect the confidence."); setLoading(false); return; }
     const { data, error: authErr } = await supabase.auth.signUp({ email, password: form.password });
     if (authErr) {
-      flash(authErr.message.includes("already registered") ? "An account with this email already exists." : authErr.message);
+      flash(authErr.message.includes("already registered") ? "An account already exists for this email." : authErr.message);
       setLoading(false); return;
     }
-    await supabase.from("tinfa_users").upsert({ email, name: form.alias.trim() }, { onConflict: "email" });
+    // Insert profile with onboarded: false so onboarding always shows on first login
+    await supabase.from("tinfa_users").upsert(
+      { email, name: form.alias.trim(), onboarded: false },
+      { onConflict: "email" }
+    );
     if (data?.user?.confirmed_at || data?.session) {
-      const { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
-      // Flag as new user so onboarding shows
-      onLogin({ ...profile, authUser: data.user, isNewUser: true });
+      const profile = await resolveProfile(email);
+      onLogin({ ...profile, authUser: data.user });
     } else {
       setMode("login");
       setForm(p => ({ ...p, password: "" }));
@@ -404,9 +439,7 @@ function Header({ isAdmin, onLogout }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {isAdmin && <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>}
-        <button onClick={onLogout} style={{ background: "none", border: `1px solid ${T.border2}`, color: T.textMute, padding: "6px 12px", borderRadius: 8, fontSize: 11, cursor: "pointer" }}>
-          Sign Out
-        </button>
+        <button onClick={onLogout} style={{ background: "none", border: `1px solid ${T.border2}`, color: T.textMute, padding: "6px 12px", borderRadius: 8, fontSize: 11, cursor: "pointer" }}>Sign Out</button>
       </div>
     </div>
   );
@@ -654,7 +687,6 @@ function AccountScreen({ user, onLogout }) {
         </div>
 
         {isAdmin && <div style={{ marginBottom: 12 }}><AccessList /></div>}
-
         <div style={{ height: 1, background: T.border, margin: "8px 0 16px" }} />
         <Btn variant="danger" onClick={onLogout}>Sign Out</Btn>
       </div>
@@ -663,15 +695,15 @@ function AccountScreen({ user, onLogout }) {
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-function MainApp({ user, onLogout }) {
+function MainApp({ user, onLogout, onOnboardingDone }) {
   const [tab, setTab]         = useState("feed");
   const [posts, setPosts]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [userVotes, setUserVotes] = useState({});
-  // Show onboarding if new user or hasn't seen it yet
-  const [showOnboarding, setShowOnboarding] = useState(
-    user.isNewUser || !hasSeenOnboarding(user.email)
-  );
+
+  // Onboarding: show if onboarded column is false/null in DB
+  const [showOnboarding, setShowOnboarding] = useState(!user.onboarded);
+
   const isAdmin = user.email === ADMIN_EMAIL;
 
   const load = useCallback(async () => {
@@ -681,8 +713,8 @@ function MainApp({ user, onLogout }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleOnboardingDone = () => {
-    markOnboardingDone(user.email);
+  const handleOnboardingDone = async () => {
+    await dbMarkOnboarded(user.email);
     setShowOnboarding(false);
   };
 
@@ -716,7 +748,7 @@ export default function TINFAApp() {
         const email = session.user.email;
         let { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
         if (!profile) {
-          await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0] });
+          await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0], onboarded: false });
           const res = await supabase.from("tinfa_users").select("*").eq("email", email).single();
           profile = res.data;
         }
