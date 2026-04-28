@@ -58,9 +58,12 @@ async function dbRemoveAllowedEmail(id) {
   await supabase.from("tinfa_allowed_emails").delete().eq("id", id);
 }
 async function dbIsEmailAllowed(email) {
-  const { data } = await supabase.from("tinfa_allowed_emails")
-    .select("id").eq("email", email.trim().toLowerCase()).single();
-  return !!data;
+  const { data, error } = await supabase
+    .from("tinfa_allowed_emails")
+    .select("id")
+    .eq("email", email.trim().toLowerCase());
+  // Use array result (no .single()) to avoid 406 errors
+  return !error && data && data.length > 0;
 }
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
@@ -146,16 +149,15 @@ function Flash({ text, type }) {
 
 // ─── Auth Screen ──────────────────────────────────────────────────────────────
 function AuthScreen({ onLogin }) {
-  const [mode, setMode]       = useState("login");
+  const [mode, setMode]         = useState("login");
   const [rememberMe, setRemember] = useState(() => localStorage.getItem("tinfa_remember") === "true");
-  const [form, setForm]       = useState({
+  const [form, setForm]         = useState({
     alias: "",
-    // Pre-fill email if remembered
-    email: rememberMe ? (localStorage.getItem("tinfa_email") || "") : "",
+    email: localStorage.getItem("tinfa_remember") === "true" ? (localStorage.getItem("tinfa_email") || "") : "",
     password: "",
   });
-  const [msg, setMsg]         = useState({ text: "", type: "" });
-  const [loading, setLoading] = useState(false);
+  const [msg, setMsg]           = useState({ text: "", type: "" });
+  const [loading, setLoading]   = useState(false);
 
   const set = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
   const flash = (text, type = "err") => setMsg({ text, type });
@@ -165,7 +167,6 @@ function AuthScreen({ onLogin }) {
     clear(); setLoading(true);
     const email = form.email.trim().toLowerCase();
 
-    // Persist or clear remembered email
     if (rememberMe) {
       localStorage.setItem("tinfa_remember", "true");
       localStorage.setItem("tinfa_email", email);
@@ -194,27 +195,28 @@ function AuthScreen({ onLogin }) {
 
     const email = form.email.trim().toLowerCase();
 
-    // Hard gate: check allowed list before anything else
+    // Check allowlist first — returns false for anyone not added by admin
     const allowed = await dbIsEmailAllowed(email);
     if (!allowed) {
       flash("Access denied… but we respect the confidence.");
       setLoading(false); return;
     }
 
-    // Check if already registered in auth (Supabase signups may be disabled publicly)
     const { data, error: authErr } = await supabase.auth.signUp({ email, password: form.password });
 
     if (authErr) {
-      // If public signups are disabled, Supabase returns an error — show friendly message
-      if (authErr.message.toLowerCase().includes("signup") || authErr.status === 422) {
-        flash("Access denied… but we respect the confidence.");
-      } else if (!authErr.message.includes("already registered")) {
+      if (authErr.message.includes("already registered")) {
+        flash("An account with this email already exists. Sign in instead.");
+      } else {
         flash(authErr.message);
       }
       setLoading(false); return;
     }
 
-    await supabase.from("tinfa_users").upsert({ email, name: form.alias.trim() }, { onConflict: "email" });
+    await supabase.from("tinfa_users").upsert(
+      { email, name: form.alias.trim() },
+      { onConflict: "email" }
+    );
 
     if (data?.user?.confirmed_at || data?.session) {
       const { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
@@ -241,14 +243,12 @@ function AuthScreen({ onLogin }) {
     <div style={{ ...shell, justifyContent: "center", alignItems: "center", maxWidth: "none", paddingTop: 0 }}>
       <div style={{ width: "100%", padding: "0 28px", maxWidth: 420 }}>
 
-        {/* Brand */}
         <div style={{ marginBottom: 40, textAlign: "center" }}>
           <div style={{ fontSize: 10, letterSpacing: "0.35em", textTransform: "uppercase", color: T.accent, marginBottom: 10 }}>TINFA</div>
           <div style={{ fontSize: 24, fontWeight: 700, color: T.text, lineHeight: 1.25, marginBottom: 8 }}>This Is Not<br />Financial Advice</div>
           <div style={{ fontSize: 12, color: T.textMute }}>Independent research. No guarantees.</div>
         </div>
 
-        {/* Card */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "24px 20px" }}>
           <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 20 }}>
             {mode === "login" ? "Sign In" : mode === "signup" ? "Create Account" : "Reset Password"}
@@ -313,11 +313,9 @@ function Header({ isAdmin, onLogout }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {isAdmin && (
-          <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>
-            Admin
-          </div>
+          <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>
         )}
-        <button onClick={onLogout} style={{ background: "none", border: `1px solid ${T.border2}`, color: T.textMute, padding: "6px 12px", borderRadius: 8, fontSize: 11, cursor: "pointer", letterSpacing: "0.05em" }}>
+        <button onClick={onLogout} style={{ background: "none", border: `1px solid ${T.border2}`, color: T.textMute, padding: "6px 12px", borderRadius: 8, fontSize: 11, cursor: "pointer" }}>
           Sign Out
         </button>
       </div>
@@ -473,7 +471,7 @@ function WriteScreen({ user, onPublished }) {
   );
 }
 
-// ─── Access List (embedded in admin account) ──────────────────────────────────
+// ─── Access List (inside Account for admin) ───────────────────────────────────
 function AccessList() {
   const [emails, setEmails]   = useState([]);
   const [input, setInput]     = useState("");
@@ -502,16 +500,14 @@ function AccessList() {
   };
 
   return (
-    <div style={{ marginTop: 8 }}>
-      {/* Section header */}
-      <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 12, paddingTop: 8 }}>
+    <div>
+      <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 8 }}>
         Access List
       </div>
-      <div style={{ fontSize: 13, color: T.textMute, marginBottom: 16 }}>
+      <div style={{ fontSize: 13, color: T.textMute, marginBottom: 14 }}>
         Only these emails can create an account.
       </div>
 
-      {/* Add row */}
       <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
         <FormLabel>Add Email</FormLabel>
         <div style={{ display: "flex", gap: 8 }}>
@@ -529,12 +525,11 @@ function AccessList() {
         )}
       </div>
 
-      {/* List */}
       <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
         {loading ? (
           <div style={{ padding: "20px", textAlign: "center", color: T.textMute, fontSize: 13 }}>Loading...</div>
         ) : emails.length === 0 ? (
-          <div style={{ padding: "20px", textAlign: "center", color: T.textMute, fontSize: 13 }}>No emails yet.</div>
+          <div style={{ padding: "20px", textAlign: "center", color: T.textMute, fontSize: 13 }}>No emails on list yet.</div>
         ) : emails.map((e, i) => (
           <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 16px", borderBottom: i < emails.length - 1 ? `1px solid ${T.border}` : "none" }}>
             <div>
@@ -580,7 +575,7 @@ function AccountScreen({ user, onLogout }) {
     <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
       <div style={{ padding: "24px 20px 40px" }}>
 
-        {/* Profile card */}
+        {/* Profile */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "20px", marginBottom: 12 }}>
           <div style={{ width: 52, height: 52, borderRadius: "50%", background: T.surface2, border: `2px solid ${T.border2}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14, fontSize: 20, color: T.accent, fontWeight: 700 }}>
             {user.name.charAt(0).toUpperCase()}
@@ -618,13 +613,14 @@ function AccountScreen({ user, onLogout }) {
           )}
         </div>
 
-        {/* Admin-only: access list */}
-        {isAdmin && <AccessList />}
+        {/* Admin: access list */}
+        {isAdmin && (
+          <div style={{ marginBottom: 12 }}>
+            <AccessList />
+          </div>
+        )}
 
-        {/* Divider */}
-        <div style={{ height: 1, background: T.border, margin: "20px 0" }} />
-
-        {/* Sign out */}
+        <div style={{ height: 1, background: T.border, margin: "8px 0 16px" }} />
         <Btn variant="danger" onClick={onLogout}>Sign Out</Btn>
       </div>
     </div>
@@ -682,10 +678,7 @@ export default function TINFAApp() {
     });
   }, []);
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-  };
+  const handleLogout = async () => { await supabase.auth.signOut(); setUser(null); };
 
   if (loading) {
     return (
