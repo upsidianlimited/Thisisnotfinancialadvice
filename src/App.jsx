@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -25,17 +25,10 @@ async function dbCreatePost(post) {
   const { error } = await supabase.from("tinfa_posts").insert({ ...post, upvotes: 0, downvotes: 0 });
   return !error;
 }
-async function dbDeletePost(id) {
-  await supabase.from("tinfa_posts").delete().eq("id", id);
-}
-async function dbUpdatePost(id, updates) {
-  await supabase.from("tinfa_posts").update(updates).eq("id", id);
-}
+async function dbDeletePost(id) { await supabase.from("tinfa_posts").delete().eq("id", id); }
+async function dbUpdatePost(id, updates) { await supabase.from("tinfa_posts").update(updates).eq("id", id); }
 async function dbCastVote(postId, userEmail, direction) {
-  await supabase.from("tinfa_votes").upsert(
-    { post_id: postId, user_email: userEmail, direction },
-    { onConflict: "post_id,user_email" }
-  );
+  await supabase.from("tinfa_votes").upsert({ post_id: postId, user_email: userEmail, direction }, { onConflict: "post_id,user_email" });
 }
 async function dbRemoveVote(postId, userEmail) {
   await supabase.from("tinfa_votes").delete().eq("post_id", postId).eq("user_email", userEmail);
@@ -54,16 +47,18 @@ async function dbAddAllowedEmail(email) {
   const { error } = await supabase.from("tinfa_allowed_emails").insert({ email: email.trim().toLowerCase() });
   return !error;
 }
-async function dbRemoveAllowedEmail(id) {
-  await supabase.from("tinfa_allowed_emails").delete().eq("id", id);
-}
+async function dbRemoveAllowedEmail(id) { await supabase.from("tinfa_allowed_emails").delete().eq("id", id); }
 async function dbIsEmailAllowed(email) {
-  const { data, error } = await supabase
-    .from("tinfa_allowed_emails")
-    .select("id")
-    .eq("email", email.trim().toLowerCase());
-  // Use array result (no .single()) to avoid 406 errors
+  const { data, error } = await supabase.from("tinfa_allowed_emails").select("id").eq("email", email.trim().toLowerCase());
   return !error && data && data.length > 0;
+}
+
+// ─── Onboarding: track per-user in localStorage ───────────────────────────────
+function hasSeenOnboarding(email) {
+  return localStorage.getItem(`tinfa_onboarded_${email}`) === "true";
+}
+function markOnboardingDone(email) {
+  localStorage.setItem(`tinfa_onboarded_${email}`, "true");
 }
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
@@ -94,6 +89,14 @@ const globalCSS = `
   ::-webkit-scrollbar-thumb { background: #252D3F; border-radius: 2px; }
   input::placeholder, textarea::placeholder { color: ${T.textMute}; }
   select option { background: ${T.surface}; color: ${T.text}; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(32px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
 `;
 
 function GlobalStyle() {
@@ -123,11 +126,9 @@ function AuthInput({ label, ...props }) {
     </div>
   );
 }
-
 function FormLabel({ children }) {
   return <div style={{ fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", color: T.textMute, marginBottom: 7 }}>{children}</div>;
 }
-
 function Btn({ children, variant = "primary", style: extra, ...props }) {
   const base = { border: "none", borderRadius: 10, fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", padding: "15px", width: "100%", transition: "opacity 0.15s" };
   const variants = {
@@ -137,7 +138,6 @@ function Btn({ children, variant = "primary", style: extra, ...props }) {
   };
   return <button style={{ ...base, ...variants[variant], ...extra }} {...props}>{children}</button>;
 }
-
 function Flash({ text, type }) {
   if (!text) return null;
   return (
@@ -147,17 +147,143 @@ function Flash({ text, type }) {
   );
 }
 
+// ─── Onboarding Slider ────────────────────────────────────────────────────────
+const ONBOARDING_PAGES = [
+  {
+    icon: "◈",
+    title: "Welcome to TINFA",
+    subtitle: "This Is Not Financial Advice",
+    body: "A private space for independent financial research, sharp analysis, and honest market thinking. No noise. No ads. No nonsense.",
+  },
+  {
+    icon: "✦",
+    title: "What You'll Find Here",
+    subtitle: "Research. Opinions. Markets.",
+    body: "Dispatches on macro trends, stocks, crypto, commodities, and opinion. Vote on what resonates. Read what matters. Think for yourself.",
+    features: ["Curated market dispatches", "Community voting", "Categories: Macro, Stocks, Crypto & more", "Private, invite-only access"],
+  },
+  {
+    icon: "⊗",
+    title: "One Rule",
+    subtitle: "The first rule of TINFA",
+    body: "What happens on TINFA, stays on TINFA.",
+    note: "This is a private community. Keep it that way.",
+    isLast: true,
+  },
+];
+
+function OnboardingSlider({ onDone }) {
+  const [page, setPage]         = useState(0);
+  const [animKey, setAnimKey]   = useState(0);
+  const touchStartX             = useRef(null);
+
+  const goTo = (n) => {
+    setPage(n);
+    setAnimKey(k => k + 1);
+  };
+  const next = () => page < ONBOARDING_PAGES.length - 1 ? goTo(page + 1) : onDone();
+  const prev = () => page > 0 && goTo(page - 1);
+
+  const onTouchStart = e => { touchStartX.current = e.touches[0].clientX; };
+  const onTouchEnd   = e => {
+    if (touchStartX.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    if (dx < -40) next();
+    else if (dx > 40) prev();
+    touchStartX.current = null;
+  };
+
+  const p = ONBOARDING_PAGES[page];
+
+  return (
+    <div style={{ ...shell, justifyContent: "space-between", maxWidth: "none", paddingTop: 0, background: T.bg }}
+      onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+
+      {/* Skip button */}
+      <div style={{ display: "flex", justifyContent: "flex-end", padding: "20px 24px 0" }}>
+        <button onClick={onDone} style={{ background: "none", border: "none", color: T.textMute, fontSize: 13, cursor: "pointer", letterSpacing: "0.05em" }}>
+          Skip
+        </button>
+      </div>
+
+      {/* Content */}
+      <div key={animKey} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 32px", animation: "slideIn 0.35s ease forwards" }}>
+
+        {/* Icon */}
+        <div style={{
+          width: 80, height: 80, borderRadius: "50%",
+          background: T.surface, border: `1px solid ${T.border}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 32, color: T.accent, marginBottom: 32,
+        }}>
+          {p.icon}
+        </div>
+
+        {/* Text */}
+        <div style={{ fontSize: 10, letterSpacing: "0.3em", textTransform: "uppercase", color: T.accent, marginBottom: 10, textAlign: "center" }}>
+          {p.subtitle}
+        </div>
+        <div style={{ fontSize: 26, fontWeight: 700, color: T.text, textAlign: "center", lineHeight: 1.2, marginBottom: 20, fontFamily: T.ff }}>
+          {p.title}
+        </div>
+        <div style={{ fontSize: 15, color: T.textSub, textAlign: "center", lineHeight: 1.75, maxWidth: 320 }}>
+          {p.body}
+        </div>
+
+        {/* Features list (page 2) */}
+        {p.features && (
+          <div style={{ marginTop: 24, width: "100%", maxWidth: 300 }}>
+            {p.features.map((f, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, flexShrink: 0 }} />
+                <div style={{ fontSize: 14, color: T.textSub }}>{f}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Rule note (page 3) */}
+        {p.note && (
+          <div style={{ marginTop: 20, fontSize: 12, color: T.textMute, textAlign: "center", fontStyle: "italic" }}>
+            {p.note}
+          </div>
+        )}
+      </div>
+
+      {/* Bottom: dots + button */}
+      <div style={{ padding: "0 28px 40px", paddingBottom: "max(40px, env(safe-area-inset-bottom))" }}>
+        {/* Dots */}
+        <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 28 }}>
+          {ONBOARDING_PAGES.map((_, i) => (
+            <div key={i} onClick={() => goTo(i)} style={{
+              width: i === page ? 20 : 6, height: 6,
+              borderRadius: 3,
+              background: i === page ? T.accent : T.border2,
+              cursor: "pointer",
+              transition: "all 0.25s ease",
+            }} />
+          ))}
+        </div>
+
+        <Btn onClick={next}>
+          {page < ONBOARDING_PAGES.length - 1 ? "Continue" : "Let's Go"}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
 // ─── Auth Screen ──────────────────────────────────────────────────────────────
 function AuthScreen({ onLogin }) {
-  const [mode, setMode]         = useState("login");
+  const [mode, setMode]           = useState("login");
   const [rememberMe, setRemember] = useState(() => localStorage.getItem("tinfa_remember") === "true");
-  const [form, setForm]         = useState({
+  const [form, setForm]           = useState({
     alias: "",
     email: localStorage.getItem("tinfa_remember") === "true" ? (localStorage.getItem("tinfa_email") || "") : "",
     password: "",
   });
-  const [msg, setMsg]           = useState({ text: "", type: "" });
-  const [loading, setLoading]   = useState(false);
+  const [msg, setMsg]     = useState({ text: "", type: "" });
+  const [loading, setLoading] = useState(false);
 
   const set = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
   const flash = (text, type = "err") => setMsg({ text, type });
@@ -166,7 +292,6 @@ function AuthScreen({ onLogin }) {
   const handleLogin = async () => {
     clear(); setLoading(true);
     const email = form.email.trim().toLowerCase();
-
     if (rememberMe) {
       localStorage.setItem("tinfa_remember", "true");
       localStorage.setItem("tinfa_email", email);
@@ -174,10 +299,8 @@ function AuthScreen({ onLogin }) {
       localStorage.removeItem("tinfa_remember");
       localStorage.removeItem("tinfa_email");
     }
-
     const { data, error } = await supabase.auth.signInWithPassword({ email, password: form.password });
     if (error || !data.user) { flash("Invalid email or password."); setLoading(false); return; }
-
     let { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
     if (!profile) {
       await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0] });
@@ -192,35 +315,19 @@ function AuthScreen({ onLogin }) {
     clear(); setLoading(true);
     if (!form.alias.trim() || !form.email || !form.password) { flash("All fields required."); setLoading(false); return; }
     if (form.password.length < 6) { flash("Password must be at least 6 characters."); setLoading(false); return; }
-
     const email = form.email.trim().toLowerCase();
-
-    // Check allowlist first — returns false for anyone not added by admin
     const allowed = await dbIsEmailAllowed(email);
-    if (!allowed) {
-      flash("Access denied… but we respect the confidence.");
-      setLoading(false); return;
-    }
-
+    if (!allowed) { flash("Access denied… but we respect the confidence."); setLoading(false); return; }
     const { data, error: authErr } = await supabase.auth.signUp({ email, password: form.password });
-
     if (authErr) {
-      if (authErr.message.includes("already registered")) {
-        flash("An account with this email already exists. Sign in instead.");
-      } else {
-        flash(authErr.message);
-      }
+      flash(authErr.message.includes("already registered") ? "An account with this email already exists." : authErr.message);
       setLoading(false); return;
     }
-
-    await supabase.from("tinfa_users").upsert(
-      { email, name: form.alias.trim() },
-      { onConflict: "email" }
-    );
-
+    await supabase.from("tinfa_users").upsert({ email, name: form.alias.trim() }, { onConflict: "email" });
     if (data?.user?.confirmed_at || data?.session) {
       const { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
-      onLogin({ ...profile, authUser: data.user });
+      // Flag as new user so onboarding shows
+      onLogin({ ...profile, authUser: data.user, isNewUser: true });
     } else {
       setMode("login");
       setForm(p => ({ ...p, password: "" }));
@@ -242,7 +349,6 @@ function AuthScreen({ onLogin }) {
   return (
     <div style={{ ...shell, justifyContent: "center", alignItems: "center", maxWidth: "none", paddingTop: 0 }}>
       <div style={{ width: "100%", padding: "0 28px", maxWidth: 420 }}>
-
         <div style={{ marginBottom: 40, textAlign: "center" }}>
           <div style={{ fontSize: 10, letterSpacing: "0.35em", textTransform: "uppercase", color: T.accent, marginBottom: 10 }}>TINFA</div>
           <div style={{ fontSize: 24, fontWeight: 700, color: T.text, lineHeight: 1.25, marginBottom: 8 }}>This Is Not<br />Financial Advice</div>
@@ -253,42 +359,27 @@ function AuthScreen({ onLogin }) {
           <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 20 }}>
             {mode === "login" ? "Sign In" : mode === "signup" ? "Create Account" : "Reset Password"}
           </div>
-
           <Flash text={msg.text} type={msg.type} />
-
-          {mode === "signup" && (
-            <AuthInput label="Alias" placeholder="How you'll appear" value={form.alias} onChange={set("alias")} />
-          )}
+          {mode === "signup" && <AuthInput label="Alias" placeholder="How you'll appear" value={form.alias} onChange={set("alias")} />}
           <AuthInput label="Email" type="email" placeholder="you@email.com" value={form.email} onChange={set("email")}
             onKeyDown={e => e.key === "Enter" && mode === "login" && handleLogin()} />
           {mode !== "forgot" && (
             <AuthInput label="Password" type="password" placeholder="••••••••" value={form.password} onChange={set("password")}
               onKeyDown={e => e.key === "Enter" && mode === "login" && handleLogin()} />
           )}
-
           {mode === "login" && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                 <input type="checkbox" checked={rememberMe}
-                  onChange={e => {
-                    const val = e.target.checked;
-                    setRemember(val);
-                    if (!val) {
-                      localStorage.removeItem("tinfa_remember");
-                      localStorage.removeItem("tinfa_email");
-                    }
-                  }}
-                  style={{ accentColor: T.accent, width: 14, height: 14, cursor: "pointer" }}
-                />
+                  onChange={e => { const v = e.target.checked; setRemember(v); if (!v) { localStorage.removeItem("tinfa_remember"); localStorage.removeItem("tinfa_email"); } }}
+                  style={{ accentColor: T.accent, width: 14, height: 14, cursor: "pointer" }} />
                 <span style={{ fontSize: 12, color: T.textSub }}>Remember me</span>
               </label>
-              <button onClick={() => { setMode("forgot"); clear(); }}
-                style={{ background: "none", border: "none", color: T.accent, fontSize: 12, cursor: "pointer" }}>
+              <button onClick={() => { setMode("forgot"); clear(); }} style={{ background: "none", border: "none", color: T.accent, fontSize: 12, cursor: "pointer" }}>
                 Forgot password?
               </button>
             </div>
           )}
-
           {mode === "login"  && <Btn onClick={handleLogin}  disabled={loading}>{loading ? "..." : "Sign In"}</Btn>}
           {mode === "signup" && <Btn onClick={handleSignup} disabled={loading}>{loading ? "..." : "Create Account"}</Btn>}
           {mode === "forgot" && <Btn onClick={handleForgot} disabled={loading}>{loading ? "Sending..." : "Send Reset Link"}</Btn>}
@@ -312,9 +403,7 @@ function Header({ isAdmin, onLogout }) {
         <div style={{ fontSize: 15, fontWeight: 700, color: T.text, marginTop: 1 }}>This Is Not Financial Advice</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {isAdmin && (
-          <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>
-        )}
+        {isAdmin && <div style={{ fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>}
         <button onClick={onLogout} style={{ background: "none", border: `1px solid ${T.border2}`, color: T.textMute, padding: "6px 12px", borderRadius: 8, fontSize: 11, cursor: "pointer" }}>
           Sign Out
         </button>
@@ -360,17 +449,11 @@ function PostCard({ post, userVotes, onVote, isAdmin, onDelete, userEmail }) {
   const handleVote = async (direction) => {
     if (userVote === direction) {
       await dbRemoveVote(post.id, userEmail);
-      await dbUpdatePost(post.id, {
-        upvotes:   direction === "up"   ? post.upvotes - 1   : post.upvotes,
-        downvotes: direction === "down" ? post.downvotes - 1 : post.downvotes,
-      });
+      await dbUpdatePost(post.id, { upvotes: direction === "up" ? post.upvotes - 1 : post.upvotes, downvotes: direction === "down" ? post.downvotes - 1 : post.downvotes });
     } else {
       const wasOpposite = userVote && userVote !== direction;
       await dbCastVote(post.id, userEmail, direction);
-      await dbUpdatePost(post.id, {
-        upvotes:   direction === "up"   ? post.upvotes + 1   : (wasOpposite ? post.upvotes - 1   : post.upvotes),
-        downvotes: direction === "down" ? post.downvotes + 1 : (wasOpposite ? post.downvotes - 1 : post.downvotes),
-      });
+      await dbUpdatePost(post.id, { upvotes: direction === "up" ? post.upvotes + 1 : (wasOpposite ? post.upvotes - 1 : post.upvotes), downvotes: direction === "down" ? post.downvotes + 1 : (wasOpposite ? post.downvotes - 1 : post.downvotes) });
     }
     onVote();
   };
@@ -384,16 +467,10 @@ function PostCard({ post, userVotes, onVote, isAdmin, onDelete, userEmail }) {
         <div style={{ fontSize: 11, color: T.textMute, marginLeft: "auto" }}>{fmtDate(post.created_at)}</div>
       </div>
       <div style={{ padding: "10px 16px 14px" }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: T.text, lineHeight: 1.35, marginBottom: 8, cursor: "pointer" }} onClick={() => setExpanded(v => !v)}>
-          {post.title}
-        </div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: T.text, lineHeight: 1.35, marginBottom: 8, cursor: "pointer" }} onClick={() => setExpanded(v => !v)}>{post.title}</div>
         <div style={{ fontSize: 14, lineHeight: 1.75, color: T.textSub }}>
           {expanded ? post.body : preview}
-          {post.body.length > 280 && (
-            <span onClick={() => setExpanded(v => !v)} style={{ color: T.accent, cursor: "pointer", marginLeft: 6, fontSize: 13 }}>
-              {expanded ? " less" : " more"}
-            </span>
-          )}
+          {post.body.length > 280 && <span onClick={() => setExpanded(v => !v)} style={{ color: T.accent, cursor: "pointer", marginLeft: 6, fontSize: 13 }}>{expanded ? " less" : " more"}</span>}
         </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderTop: `1px solid ${T.border}` }}>
@@ -421,9 +498,7 @@ function FeedScreen({ user, posts, loading, userVotes, onVote, onDelete, isAdmin
         </div>
       ) : (
         <div style={{ padding: "12px 0 24px" }}>
-          {posts.map(post => (
-            <PostCard key={post.id} post={post} userVotes={userVotes} onVote={onVote} isAdmin={isAdmin} onDelete={onDelete} userEmail={user.email} />
-          ))}
+          {posts.map(post => <PostCard key={post.id} post={post} userVotes={userVotes} onVote={onVote} isAdmin={isAdmin} onDelete={onDelete} userEmail={user.email} />)}
         </div>
       )}
     </div>
@@ -450,38 +525,31 @@ function WriteScreen({ user, onPublished }) {
       <div style={{ padding: "24px 20px 40px" }}>
         <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 24 }}>New Dispatch</div>
         {msg && <div style={{ fontSize: 13, color: T.danger, background: "#1E0A0A", padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>{msg}</div>}
-
         <FormLabel>Category</FormLabel>
         <select value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))}
           style={{ width: "100%", padding: "13px 14px", background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.text, outline: "none", marginBottom: 18 }}>
           {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
         </select>
-
         <FormLabel>Title</FormLabel>
         <input placeholder="What's your thesis?" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))}
           style={{ width: "100%", padding: "13px 14px", background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 17, color: T.text, outline: "none", marginBottom: 18, fontFamily: T.ff }} />
-
         <FormLabel>Body</FormLabel>
         <textarea placeholder="Write your analysis..." value={form.body} onChange={e => setForm(p => ({ ...p, body: e.target.value }))}
           style={{ width: "100%", padding: "13px 14px", background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.text, outline: "none", resize: "none", height: 220, lineHeight: 1.75, fontFamily: T.ff, marginBottom: 24 }} />
-
         <Btn onClick={handlePublish} disabled={saving}>{saving ? "Publishing..." : "Publish Dispatch"}</Btn>
       </div>
     </div>
   );
 }
 
-// ─── Access List (inside Account for admin) ───────────────────────────────────
+// ─── Access List ──────────────────────────────────────────────────────────────
 function AccessList() {
   const [emails, setEmails]   = useState([]);
   const [input, setInput]     = useState("");
   const [loading, setLoading] = useState(true);
   const [msg, setMsg]         = useState({ text: "", type: "" });
 
-  const load = async () => {
-    const data = await dbGetAllowedEmails();
-    setEmails(data); setLoading(false);
-  };
+  const load = async () => { const data = await dbGetAllowedEmails(); setEmails(data); setLoading(false); };
   useEffect(() => { load(); }, []);
 
   const handleAdd = async () => {
@@ -495,36 +563,22 @@ function AccessList() {
 
   const handleRemove = async (id, email) => {
     if (email === ADMIN_EMAIL) { setMsg({ text: "Can't remove admin email.", type: "err" }); return; }
-    await dbRemoveAllowedEmail(id);
-    load();
+    await dbRemoveAllowedEmail(id); load();
   };
 
   return (
     <div>
-      <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 8 }}>
-        Access List
-      </div>
-      <div style={{ fontSize: 13, color: T.textMute, marginBottom: 14 }}>
-        Only these emails can create an account.
-      </div>
-
+      <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 8 }}>Access List</div>
+      <div style={{ fontSize: 13, color: T.textMute, marginBottom: 14 }}>Only these emails can create an account.</div>
       <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
         <FormLabel>Add Email</FormLabel>
         <div style={{ display: "flex", gap: 8 }}>
-          <input type="email" placeholder="someone@email.com" value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleAdd()}
+          <input type="email" placeholder="someone@email.com" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAdd()}
             style={{ flex: 1, padding: "11px 14px", background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.text, outline: "none" }} />
-          <button onClick={handleAdd}
-            style={{ padding: "11px 18px", background: T.accent, color: "#080A0F", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
-            Add
-          </button>
+          <button onClick={handleAdd} style={{ padding: "11px 18px", background: T.accent, color: "#080A0F", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Add</button>
         </div>
-        {msg.text && (
-          <div style={{ fontSize: 12, marginTop: 10, color: msg.type === "ok" ? T.success : T.danger }}>{msg.text}</div>
-        )}
+        {msg.text && <div style={{ fontSize: 12, marginTop: 10, color: msg.type === "ok" ? T.success : T.danger }}>{msg.text}</div>}
       </div>
-
       <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
         {loading ? (
           <div style={{ padding: "20px", textAlign: "center", color: T.textMute, fontSize: 13 }}>Loading...</div>
@@ -534,15 +588,10 @@ function AccessList() {
           <div key={e.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 16px", borderBottom: i < emails.length - 1 ? `1px solid ${T.border}` : "none" }}>
             <div>
               <div style={{ fontSize: 14, color: T.text }}>{e.email}</div>
-              {e.email === ADMIN_EMAIL && (
-                <div style={{ fontSize: 10, color: T.accentDim, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Admin</div>
-              )}
+              {e.email === ADMIN_EMAIL && <div style={{ fontSize: 10, color: T.accentDim, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Admin</div>}
             </div>
             {e.email !== ADMIN_EMAIL && (
-              <button onClick={() => handleRemove(e.id, e.email)}
-                style={{ background: "none", border: `1px solid #2E1515`, color: T.danger, padding: "5px 12px", fontSize: 11, borderRadius: 6, cursor: "pointer" }}>
-                Remove
-              </button>
+              <button onClick={() => handleRemove(e.id, e.email)} style={{ background: "none", border: `1px solid #2E1515`, color: T.danger, padding: "5px 12px", fontSize: 11, borderRadius: 6, cursor: "pointer" }}>Remove</button>
             )}
           </div>
         ))}
@@ -574,27 +623,19 @@ function AccountScreen({ user, onLogout }) {
   return (
     <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
       <div style={{ padding: "24px 20px 40px" }}>
-
-        {/* Profile */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "20px", marginBottom: 12 }}>
           <div style={{ width: 52, height: 52, borderRadius: "50%", background: T.surface2, border: `2px solid ${T.border2}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14, fontSize: 20, color: T.accent, fontWeight: 700 }}>
             {user.name.charAt(0).toUpperCase()}
           </div>
           <div style={{ fontSize: 18, fontWeight: 700, color: T.text, marginBottom: 4 }}>{user.name}</div>
           <div style={{ fontSize: 13, color: T.textMute }}>{user.email}</div>
-          {isAdmin && (
-            <div style={{ marginTop: 12, display: "inline-block", fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>
-          )}
+          {isAdmin && <div style={{ marginTop: 12, display: "inline-block", fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>}
         </div>
 
-        {/* Password */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "16px 20px", marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontSize: 14, color: T.text }}>Password</div>
-            <button onClick={() => { setPwOpen(v => !v); setPwErr(""); setPwOk(""); }}
-              style={{ background: "none", border: "none", color: T.accent, fontSize: 13, cursor: "pointer" }}>
-              {pwOpen ? "Cancel" : "Change"}
-            </button>
+            <button onClick={() => { setPwOpen(v => !v); setPwErr(""); setPwOk(""); }} style={{ background: "none", border: "none", color: T.accent, fontSize: 13, cursor: "pointer" }}>{pwOpen ? "Cancel" : "Change"}</button>
           </div>
           {pwOpen && (
             <div style={{ marginTop: 16 }}>
@@ -603,8 +644,7 @@ function AccountScreen({ user, onLogout }) {
               {[["current", "Current Password"], ["newPw", "New Password"], ["confirm", "Confirm New"]].map(([k, lbl]) => (
                 <div key={k} style={{ marginBottom: 14 }}>
                   <FormLabel>{lbl}</FormLabel>
-                  <input type="password" placeholder="••••••••" value={pwForm[k]}
-                    onChange={e => setPwForm(p => ({ ...p, [k]: e.target.value }))}
+                  <input type="password" placeholder="••••••••" value={pwForm[k]} onChange={e => setPwForm(p => ({ ...p, [k]: e.target.value }))}
                     style={{ width: "100%", padding: "12px 14px", background: T.surface2, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 15, color: T.text, outline: "none" }} />
                 </div>
               ))}
@@ -613,12 +653,7 @@ function AccountScreen({ user, onLogout }) {
           )}
         </div>
 
-        {/* Admin: access list */}
-        {isAdmin && (
-          <div style={{ marginBottom: 12 }}>
-            <AccessList />
-          </div>
-        )}
+        {isAdmin && <div style={{ marginBottom: 12 }}><AccessList /></div>}
 
         <div style={{ height: 1, background: T.border, margin: "8px 0 16px" }} />
         <Btn variant="danger" onClick={onLogout}>Sign Out</Btn>
@@ -633,6 +668,10 @@ function MainApp({ user, onLogout }) {
   const [posts, setPosts]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [userVotes, setUserVotes] = useState({});
+  // Show onboarding if new user or hasn't seen it yet
+  const [showOnboarding, setShowOnboarding] = useState(
+    user.isNewUser || !hasSeenOnboarding(user.email)
+  );
   const isAdmin = user.email === ADMIN_EMAIL;
 
   const load = useCallback(async () => {
@@ -641,6 +680,15 @@ function MainApp({ user, onLogout }) {
   }, [user.email]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleOnboardingDone = () => {
+    markOnboardingDone(user.email);
+    setShowOnboarding(false);
+  };
+
+  if (showOnboarding) {
+    return <OnboardingSlider onDone={handleOnboardingDone} />;
+  }
 
   const tabs = isAdmin
     ? [{ id: "feed", label: "Feed", icon: "◈" }, { id: "write", label: "Write", icon: "✦" }, { id: "account", label: "Account", icon: "◉" }]
