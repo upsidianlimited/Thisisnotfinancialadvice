@@ -7,6 +7,7 @@ const supabase = createClient(
 );
 
 const ADMIN_EMAIL = "feranmi06@gmail.com";
+const PAYSTACK_KEY = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY;
 
 const CATEGORIES = [
   { id: "macro",       label: "Macro",       color: "#C9A96E" },
@@ -52,8 +53,6 @@ async function dbIsEmailAllowed(email) {
   const { data, error } = await supabase.from("tinfa_allowed_emails").select("id").eq("email", email.trim().toLowerCase());
   return !error && data && data.length > 0;
 }
-
-// ─── DB: mark onboarding done (stored in Supabase, works across all devices) ──
 async function dbMarkOnboarded(email) {
   await supabase.from("tinfa_users").update({ onboarded: true }).eq("email", email);
 }
@@ -90,18 +89,25 @@ const globalCSS = `
     from { opacity: 0; transform: translateX(28px); }
     to   { opacity: 1; transform: translateX(0); }
   }
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-  }
 `;
 
 function GlobalStyle() {
   useEffect(() => {
-    const el = document.createElement("style");
-    el.textContent = globalCSS;
-    document.head.appendChild(el);
-    return () => document.head.removeChild(el);
+    // Inject global CSS
+    const style = document.createElement("style");
+    style.textContent = globalCSS;
+    document.head.appendChild(style);
+
+    // Inject Paystack script
+    if (!document.getElementById("paystack-script")) {
+      const script = document.createElement("script");
+      script.id  = "paystack-script";
+      script.src = "https://js.paystack.co/v1/inline.js";
+      script.async = true;
+      document.head.appendChild(script);
+    }
+
+    return () => document.head.removeChild(style);
   }, []);
   return null;
 }
@@ -129,9 +135,10 @@ function FormLabel({ children }) {
 function Btn({ children, variant = "primary", style: extra, ...props }) {
   const base = { border: "none", borderRadius: 10, fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer", padding: "15px", width: "100%", transition: "opacity 0.15s" };
   const variants = {
-    primary: { background: T.accent, color: "#080A0F" },
-    ghost:   { background: "none", border: `1px solid ${T.border2}`, color: T.textSub },
-    danger:  { background: "none", border: `1px solid #2E1515`, color: T.danger },
+    primary: { background: T.accent,   color: "#080A0F" },
+    ghost:   { background: "none",     border: `1px solid ${T.border2}`, color: T.textSub },
+    danger:  { background: "none",     border: `1px solid #2E1515`,     color: T.danger },
+    green:   { background: "#1A3D1A",  border: `1px solid #2E6B2E`,     color: T.success },
   };
   return <button style={{ ...base, ...variants[variant], ...extra }} {...props}>{children}</button>;
 }
@@ -140,6 +147,102 @@ function Flash({ text, type }) {
   return (
     <div style={{ fontSize: 13, padding: "10px 14px", borderRadius: 8, marginBottom: 16, color: type === "ok" ? T.success : T.danger, background: type === "ok" ? "#0A1E10" : "#1E0A0A" }}>
       {text}
+    </div>
+  );
+}
+
+// ─── Paystack Payment Button ──────────────────────────────────────────────────
+function PaystackButton({ user }) {
+  const [status, setStatus]   = useState("idle"); // idle | loading | success | error
+  const [ref, setRef]         = useState("");
+  const AMOUNT_KOBO           = 500000; // ₦5,000
+
+  const handlePay = () => {
+    if (!window.PaystackPop) {
+      setStatus("error");
+      return;
+    }
+    setStatus("loading");
+
+    const handler = window.PaystackPop.setup({
+      key:      PAYSTACK_KEY,
+      email:    user.email,
+      amount:   AMOUNT_KOBO,
+      currency: "NGN",
+      ref:      `tinfa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      metadata: {
+        custom_fields: [
+          { display_name: "Alias", variable_name: "alias", value: user.name },
+        ],
+      },
+      callback: (response) => {
+        setStatus("success");
+        setRef(response.reference);
+      },
+      onClose: () => {
+        setStatus("idle");
+      },
+    });
+
+    handler.openIframe();
+  };
+
+  if (status === "success") {
+    return (
+      <div style={{ background: "#0A1E10", border: `1px solid #2E6B2E`, borderRadius: 14, padding: "20px", textAlign: "center" }}>
+        <div style={{ fontSize: 28, marginBottom: 12 }}>✓</div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.success, marginBottom: 6 }}>Payment Successful</div>
+        <div style={{ fontSize: 12, color: T.textMute, marginBottom: 4 }}>₦{(AMOUNT_KOBO / 100).toLocaleString()} received</div>
+        <div style={{ fontSize: 10, color: T.textMute, letterSpacing: "0.08em", wordBreak: "break-all" }}>Ref: {ref}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: "20px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: T.accent, marginBottom: 4 }}>TINFA Premium</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: T.text }}>₦5,000</div>
+          <div style={{ fontSize: 12, color: T.textMute, marginTop: 2 }}>one-time payment · test mode</div>
+        </div>
+        <div style={{ fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 8px", borderRadius: 20 }}>
+          Test
+        </div>
+      </div>
+
+      {/* What you get */}
+      <div style={{ marginBottom: 20 }}>
+        {["Full access to all dispatches", "Priority research updates", "Exclusive member content"].map((f, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div style={{ width: 5, height: 5, borderRadius: "50%", background: T.accent, flexShrink: 0 }} />
+            <div style={{ fontSize: 13, color: T.textSub }}>{f}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Divider */}
+      <div style={{ height: 1, background: T.border, marginBottom: 16 }} />
+
+      {/* Pay button */}
+      <Btn
+        onClick={handlePay}
+        disabled={status === "loading"}
+        style={{ opacity: status === "loading" ? 0.6 : 1 }}
+      >
+        {status === "loading" ? "Opening Paystack..." : "Pay ₦5,000 with Paystack"}
+      </Btn>
+
+      {status === "error" && (
+        <div style={{ fontSize: 12, color: T.danger, marginTop: 10, textAlign: "center" }}>
+          Paystack failed to load. Refresh and try again.
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: T.textMute, textAlign: "center", marginTop: 12 }}>
+        Secured by Paystack · Test mode — no real charges
+      </div>
     </div>
   );
 }
@@ -177,6 +280,7 @@ function OnboardingSlider({ onDone }) {
   const [page, setPage]       = useState(0);
   const [animKey, setAnimKey] = useState(0);
   const touchStartX           = useRef(null);
+  const mouseStartX           = useRef(null);
   const total                 = ONBOARDING_PAGES.length;
 
   const goTo = (n) => { setPage(n); setAnimKey(k => k + 1); };
@@ -187,13 +291,9 @@ function OnboardingSlider({ onDone }) {
   const onTouchEnd   = e => {
     if (touchStartX.current === null) return;
     const dx = e.changedTouches[0].clientX - touchStartX.current;
-    if (dx < -40) next();
-    else if (dx > 40) prev();
+    if (dx < -40) next(); else if (dx > 40) prev();
     touchStartX.current = null;
   };
-
-  // Also support mouse drag on desktop
-  const mouseStartX = useRef(null);
   const onMouseDown = e => { mouseStartX.current = e.clientX; };
   const onMouseUp   = e => {
     if (mouseStartX.current === null) return;
@@ -205,53 +305,22 @@ function OnboardingSlider({ onDone }) {
   const p = ONBOARDING_PAGES[page];
 
   return (
-    <div
-      style={{ ...shell, maxWidth: "none", paddingTop: 0, justifyContent: "space-between", userSelect: "none" }}
+    <div style={{ ...shell, maxWidth: "none", paddingTop: 0, justifyContent: "space-between", userSelect: "none" }}
       onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}
-      onMouseDown={onMouseDown} onMouseUp={onMouseUp}
-    >
-      {/* Top row */}
+      onMouseDown={onMouseDown} onMouseUp={onMouseUp}>
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 24px 0" }}>
-        {/* Step counter */}
-        <div style={{ fontSize: 11, color: T.textMute, letterSpacing: "0.1em" }}>
-          {page + 1} / {total}
-        </div>
-        <button onClick={onDone} style={{ background: "none", border: "none", color: T.textMute, fontSize: 13, cursor: "pointer", padding: "4px 0" }}>
-          Skip
-        </button>
+        <div style={{ fontSize: 11, color: T.textMute, letterSpacing: "0.1em" }}>{page + 1} / {total}</div>
+        <button onClick={onDone} style={{ background: "none", border: "none", color: T.textMute, fontSize: 13, cursor: "pointer" }}>Skip</button>
       </div>
 
-      {/* Slide content */}
-      <div
-        key={animKey}
-        style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 32px 20px", animation: "slideIn 0.3s ease forwards" }}
-      >
-        {/* Icon circle */}
-        <div style={{
-          width: 72, height: 72, borderRadius: "50%",
-          background: T.surface, border: `1px solid ${T.border2}`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 28, color: T.accent, marginBottom: 28, flexShrink: 0,
-        }}>
+      <div key={animKey} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 32px 20px", animation: "slideIn 0.3s ease forwards" }}>
+        <div style={{ width: 72, height: 72, borderRadius: "50%", background: T.surface, border: `1px solid ${T.border2}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: T.accent, marginBottom: 28 }}>
           {p.icon}
         </div>
-
-        {/* Eyebrow */}
-        <div style={{ fontSize: 10, letterSpacing: "0.3em", textTransform: "uppercase", color: T.accent, marginBottom: 12 }}>
-          {p.eyebrow}
-        </div>
-
-        {/* Title — supports newlines */}
-        <div style={{ fontSize: 28, fontWeight: 700, color: T.text, lineHeight: 1.2, marginBottom: 20, whiteSpace: "pre-line" }}>
-          {p.title}
-        </div>
-
-        {/* Body */}
-        <div style={{ fontSize: 15, color: T.textSub, lineHeight: 1.75, marginBottom: p.features ? 24 : 0 }}>
-          {p.body}
-        </div>
-
-        {/* Feature bullets (page 2) */}
+        <div style={{ fontSize: 10, letterSpacing: "0.3em", textTransform: "uppercase", color: T.accent, marginBottom: 12 }}>{p.eyebrow}</div>
+        <div style={{ fontSize: 28, fontWeight: 700, color: T.text, lineHeight: 1.2, marginBottom: 20, whiteSpace: "pre-line" }}>{p.title}</div>
+        <div style={{ fontSize: 15, color: T.textSub, lineHeight: 1.75, marginBottom: p.features ? 24 : 0 }}>{p.body}</div>
         {p.features && (
           <div>
             {p.features.map((f, i) => (
@@ -264,35 +333,16 @@ function OnboardingSlider({ onDone }) {
         )}
       </div>
 
-      {/* Bottom: progress dots + CTA */}
       <div style={{ padding: "0 28px", paddingBottom: "max(36px, env(safe-area-inset-bottom))", flexShrink: 0 }}>
-        {/* Progress dots */}
         <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 24 }}>
           {Array.from({ length: total }).map((_, i) => (
-            <div
-              key={i}
-              onClick={() => goTo(i)}
-              style={{
-                height: 6, borderRadius: 3, cursor: "pointer",
-                width: i === page ? 24 : 6,
-                background: i === page ? T.accent : T.border2,
-                transition: "all 0.25s ease",
-              }}
-            />
+            <div key={i} onClick={() => goTo(i)} style={{ height: 6, borderRadius: 3, cursor: "pointer", width: i === page ? 24 : 6, background: i === page ? T.accent : T.border2, transition: "all 0.25s ease" }} />
           ))}
         </div>
-
-        {/* CTA button */}
-        <Btn onClick={next}>
-          {page < total - 1 ? "Continue →" : "I Understand — Let's Go"}
-        </Btn>
-
-        {/* Back link */}
+        <Btn onClick={next}>{page < total - 1 ? "Continue →" : "I Understand — Let's Go"}</Btn>
         {page > 0 && (
           <div style={{ textAlign: "center", marginTop: 14 }}>
-            <button onClick={prev} style={{ background: "none", border: "none", color: T.textMute, fontSize: 12, cursor: "pointer" }}>
-              ← Back
-            </button>
+            <button onClick={prev} style={{ background: "none", border: "none", color: T.textMute, fontSize: 12, cursor: "pointer" }}>← Back</button>
           </div>
         )}
       </div>
@@ -319,7 +369,7 @@ function AuthScreen({ onLogin }) {
   const resolveProfile = async (email) => {
     let { data: profile } = await supabase.from("tinfa_users").select("*").eq("email", email).single();
     if (!profile) {
-      await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0] });
+      await supabase.from("tinfa_users").insert({ email, name: email.split("@")[0], onboarded: false });
       const res = await supabase.from("tinfa_users").select("*").eq("email", email).single();
       profile = res.data;
     }
@@ -351,21 +401,13 @@ function AuthScreen({ onLogin }) {
     const allowed = await dbIsEmailAllowed(email);
     if (!allowed) { flash("Access denied… but we respect the confidence."); setLoading(false); return; }
     const { data, error: authErr } = await supabase.auth.signUp({ email, password: form.password });
-    if (authErr) {
-      flash(authErr.message.includes("already registered") ? "An account already exists for this email." : authErr.message);
-      setLoading(false); return;
-    }
-    // Insert profile with onboarded: false so onboarding always shows on first login
-    await supabase.from("tinfa_users").upsert(
-      { email, name: form.alias.trim(), onboarded: false },
-      { onConflict: "email" }
-    );
+    if (authErr) { flash(authErr.message.includes("already registered") ? "An account already exists for this email." : authErr.message); setLoading(false); return; }
+    await supabase.from("tinfa_users").upsert({ email, name: form.alias.trim(), onboarded: false }, { onConflict: "email" });
     if (data?.user?.confirmed_at || data?.session) {
       const profile = await resolveProfile(email);
       onLogin({ ...profile, authUser: data.user });
     } else {
-      setMode("login");
-      setForm(p => ({ ...p, password: "" }));
+      setMode("login"); setForm(p => ({ ...p, password: "" }));
       flash("Account created — sign in now.", "ok");
     }
     setLoading(false);
@@ -389,7 +431,6 @@ function AuthScreen({ onLogin }) {
           <div style={{ fontSize: 24, fontWeight: 700, color: T.text, lineHeight: 1.25, marginBottom: 8 }}>This Is Not<br />Financial Advice</div>
           <div style={{ fontSize: 12, color: T.textMute }}>Independent research. No guarantees.</div>
         </div>
-
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "24px 20px" }}>
           <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: T.textMute, marginBottom: 20 }}>
             {mode === "login" ? "Sign In" : mode === "signup" ? "Create Account" : "Reset Password"}
@@ -419,7 +460,6 @@ function AuthScreen({ onLogin }) {
           {mode === "signup" && <Btn onClick={handleSignup} disabled={loading}>{loading ? "..." : "Create Account"}</Btn>}
           {mode === "forgot" && <Btn onClick={handleForgot} disabled={loading}>{loading ? "Sending..." : "Send Reset Link"}</Btn>}
         </div>
-
         <div style={{ textAlign: "center", marginTop: 20, display: "flex", justifyContent: "center", gap: 20 }}>
           {mode !== "login"  && <button onClick={() => { setMode("login");  clear(); }} style={{ background: "none", border: "none", color: T.textSub, fontSize: 13, cursor: "pointer" }}>Sign in</button>}
           {mode !== "signup" && <button onClick={() => { setMode("signup"); clear(); }} style={{ background: "none", border: "none", color: T.textSub, fontSize: 13, cursor: "pointer" }}>Create account</button>}
@@ -656,6 +696,8 @@ function AccountScreen({ user, onLogout }) {
   return (
     <div style={{ flex: 1, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch" }}>
       <div style={{ padding: "24px 20px 40px" }}>
+
+        {/* Profile */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "20px", marginBottom: 12 }}>
           <div style={{ width: 52, height: 52, borderRadius: "50%", background: T.surface2, border: `2px solid ${T.border2}`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14, fontSize: 20, color: T.accent, fontWeight: 700 }}>
             {user.name.charAt(0).toUpperCase()}
@@ -665,6 +707,12 @@ function AccountScreen({ user, onLogout }) {
           {isAdmin && <div style={{ marginTop: 12, display: "inline-block", fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>}
         </div>
 
+        {/* Payment test */}
+        <div style={{ marginBottom: 12 }}>
+          <PaystackButton user={user} />
+        </div>
+
+        {/* Password */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "16px 20px", marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontSize: 14, color: T.text }}>Password</div>
@@ -686,7 +734,9 @@ function AccountScreen({ user, onLogout }) {
           )}
         </div>
 
+        {/* Admin: access list */}
         {isAdmin && <div style={{ marginBottom: 12 }}><AccessList /></div>}
+
         <div style={{ height: 1, background: T.border, margin: "8px 0 16px" }} />
         <Btn variant="danger" onClick={onLogout}>Sign Out</Btn>
       </div>
@@ -695,15 +745,12 @@ function AccountScreen({ user, onLogout }) {
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
-function MainApp({ user, onLogout, onOnboardingDone }) {
+function MainApp({ user, onLogout }) {
   const [tab, setTab]         = useState("feed");
   const [posts, setPosts]     = useState([]);
   const [loading, setLoading] = useState(true);
   const [userVotes, setUserVotes] = useState({});
-
-  // Onboarding: show if onboarded column is false/null in DB
   const [showOnboarding, setShowOnboarding] = useState(!user.onboarded);
-
   const isAdmin = user.email === ADMIN_EMAIL;
 
   const load = useCallback(async () => {
@@ -718,9 +765,7 @@ function MainApp({ user, onLogout, onOnboardingDone }) {
     setShowOnboarding(false);
   };
 
-  if (showOnboarding) {
-    return <OnboardingSlider onDone={handleOnboardingDone} />;
-  }
+  if (showOnboarding) return <OnboardingSlider onDone={handleOnboardingDone} />;
 
   const tabs = isAdmin
     ? [{ id: "feed", label: "Feed", icon: "◈" }, { id: "write", label: "Write", icon: "✦" }, { id: "account", label: "Account", icon: "◉" }]
