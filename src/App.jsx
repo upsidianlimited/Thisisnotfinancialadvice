@@ -707,10 +707,7 @@ function AccountScreen({ user, onLogout }) {
           {isAdmin && <div style={{ marginTop: 12, display: "inline-block", fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", color: T.accentDim, background: "#1A1408", border: `1px solid ${T.accentDim}`, padding: "4px 10px", borderRadius: 20 }}>Admin</div>}
         </div>
 
-        {/* Payment test */}
-        <div style={{ marginBottom: 12 }}>
-          <PaystackButton user={user} />
-        </div>
+      
 
         {/* Password */}
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: "16px 20px", marginBottom: 12 }}>
